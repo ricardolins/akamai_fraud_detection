@@ -1,13 +1,10 @@
-# DaemonSet — configures containerd on every LKE node to trust the in-cluster HTTP registry.
+# DaemonSet — writes a containerd certs.d config on every LKE node to trust
+# the in-cluster HTTP registry (NodePort 32500).
 #
-# How it works:
-#   1. Runs a privileged init container on each node
-#   2. Reads the registry NodeIP from the registry-node-ip ConfigMap (created by deploy.sh)
-#   3. Writes /etc/containerd/certs.d/<REGISTRY_IP>:32500/hosts.toml with skip_verify=true
-#   4. Sends SIGHUP to containerd so the config is reloaded without a full restart
-#   5. The main container is a pause that keeps the DaemonSet pod alive
+# containerd >= 1.5 reads /etc/containerd/certs.d/ on every image pull request,
+# so no daemon restart or SIGHUP is needed — writing the file is sufficient.
 #
-# deploy.sh creates the ConfigMap before applying this manifest.
+# deploy.sh creates the registry-node-ip ConfigMap before applying this manifest.
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -25,7 +22,6 @@ spec:
       labels:
         app: containerd-registry-config
     spec:
-      hostPID: true
       tolerations:
         - operator: Exists
       initContainers:
@@ -36,32 +32,19 @@ spec:
           command: ["/bin/sh", "-c"]
           args:
             - |
+              set -e
               REGISTRY_IP=$(cat /config/ip)
               REGISTRY_ADDR="${REGISTRY_IP}:32500"
+              CERT_DIR="/host-etc/containerd/certs.d/${REGISTRY_ADDR}"
 
-              echo "[containerd-config] Configuring containerd to trust http://$REGISTRY_ADDR"
+              echo "[containerd-config] Writing trust config for http://${REGISTRY_ADDR}"
+              mkdir -p "${CERT_DIR}"
 
-              mkdir -p /host-etc/containerd/certs.d/${REGISTRY_ADDR}
-              cat > /host-etc/containerd/certs.d/${REGISTRY_ADDR}/hosts.toml << EOF
-              server = "http://${REGISTRY_ADDR}"
+              printf 'server = "http://%s"\n\n[host."http://%s"]\n  capabilities = ["pull", "resolve"]\n  skip_verify = true\n' \
+                "${REGISTRY_ADDR}" "${REGISTRY_ADDR}" > "${CERT_DIR}/hosts.toml"
 
-              [host."http://${REGISTRY_ADDR}"]
-                capabilities = ["pull", "resolve"]
-                skip_verify = true
-              EOF
-
-              echo "[containerd-config] hosts.toml written:"
-              cat /host-etc/containerd/certs.d/${REGISTRY_ADDR}/hosts.toml
-
-              # Reload containerd config (SIGHUP triggers config reload in containerd >=1.5)
-              CONTAINERD_PID=$(nsenter --mount=/proc/1/ns/mnt -- pidof containerd 2>/dev/null || echo "")
-              if [ -n "$CONTAINERD_PID" ]; then
-                nsenter --mount=/proc/1/ns/mnt -- kill -HUP $CONTAINERD_PID
-                echo "[containerd-config] Sent SIGHUP to containerd PID=$CONTAINERD_PID"
-              else
-                echo "[containerd-config] containerd PID not found — skipping reload signal"
-              fi
-
+              echo "[containerd-config] hosts.toml:"
+              cat "${CERT_DIR}/hosts.toml"
               echo "[containerd-config] Done."
           volumeMounts:
             - name: host-etc
@@ -70,7 +53,8 @@ spec:
               mountPath: /config
       containers:
         - name: pause
-          image: gcr.io/google_containers/pause:3.9
+          image: busybox:1.36
+          command: ["sh", "-c", "while true; do sleep 86400; done"]
           resources:
             requests:
               cpu: "1m"

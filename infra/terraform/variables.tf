@@ -20,7 +20,7 @@ variable "region" {
 variable "k8s_version" {
   description = "Kubernetes version"
   type        = string
-  default     = "1.32"
+  default     = "1.34"
 }
 
 variable "node_type" {
@@ -36,6 +36,11 @@ variable "node_count" {
   description = "Number of worker nodes"
   type        = number
   default     = 3
+}
+
+variable "allowed_ip" {
+  description = "Developer IP address allowed to access NodePorts and the Kubernetes API. All other inbound traffic is blocked by the Linode firewall."
+  type        = string
 }
 
 variable "tags" {

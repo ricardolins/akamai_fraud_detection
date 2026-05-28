@@ -64,7 +64,11 @@ done
 [[ -z "${TF_VAR_linode_token:-}" ]] && \
     die "TF_VAR_linode_token not set. Export your Linode API token."
 
-info "Tag: $TAG"
+[[ -z "${TF_VAR_allowed_ip:-}" ]] && \
+    die "TF_VAR_allowed_ip not set. Export your public IP (e.g. export TF_VAR_allowed_ip=\$(curl -s https://api.ipify.org))"
+
+info "Tag        : $TAG"
+info "Allowed IP : ${TF_VAR_allowed_ip}"
 echo ""
 
 # ── STEP 1: Provision LKE with Terraform ────────────────────────────────────────
