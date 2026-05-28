@@ -1,0 +1,225 @@
+# Grafana — dashboards and visualization
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: monitoring
+data:
+  datasources.yml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        uid: prometheus
+        access: proxy
+        url: http://prometheus.monitoring.svc.cluster.local:9090
+        isDefault: true
+        jsonData:
+          timeInterval: "10s"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-provider
+  namespace: monitoring
+data:
+  dashboards.yml: |
+    apiVersion: 1
+    providers:
+      - name: fraud-platform
+        type: file
+        disableDeletion: true
+        updateIntervalSeconds: 30
+        options:
+          path: /var/lib/grafana/dashboards
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  namespace: monitoring
+data:
+  # Dashboard JSON inlined — same dashboard as the local demo
+  fraud_platform.json: |
+    {
+      "uid": "fraud-platform-lke",
+      "title": "Fraud Detection Platform — LKE",
+      "tags": ["fraud","healthcare","lke"],
+      "timezone": "browser",
+      "refresh": "5s",
+      "time": { "from": "now-30m", "to": "now" },
+      "schemaVersion": 38,
+      "panels": [
+        {
+          "id": 1, "type": "stat", "title": "Total Claims Processed",
+          "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [{ "expr": "sum(stream_processor_claims_total)", "legendFormat": "Total" }],
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+          "fieldConfig": { "defaults": { "color": { "mode": "thresholds" },
+            "thresholds": { "steps": [{ "color": "blue", "value": null }] } } }
+        },
+        {
+          "id": 2, "type": "stat", "title": "Fraud Alerts (30 min)",
+          "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [{ "expr": "sum(increase(stream_processor_fraud_alerts_total{risk_level=~\"HIGH|CRITICAL\"}[30m]))" }],
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+          "fieldConfig": { "defaults": { "color": { "mode": "thresholds" },
+            "thresholds": { "steps": [
+              { "color": "green", "value": null }, { "color": "orange", "value": 3 }, { "color": "red", "value": 10 }
+            ] } } }
+        },
+        {
+          "id": 3, "type": "stat", "title": "ML Latency p99 (ms)",
+          "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [{ "expr": "histogram_quantile(0.99, sum(rate(fraud_scorer_latency_seconds_bucket[2m])) by (le)) * 1000" }],
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+          "fieldConfig": { "defaults": { "unit": "ms", "color": { "mode": "thresholds" },
+            "thresholds": { "steps": [
+              { "color": "green", "value": null }, { "color": "orange", "value": 50 }, { "color": "red", "value": 100 }
+            ] } } }
+        },
+        {
+          "id": 4, "type": "stat", "title": "Active Providers",
+          "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [{ "expr": "stream_processor_active_providers" }],
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+          "fieldConfig": { "defaults": { "color": { "mode": "thresholds" },
+            "thresholds": { "steps": [{ "color": "purple", "value": null }] } } }
+        },
+        {
+          "id": 5, "type": "timeseries", "title": "Claims Throughput",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            { "expr": "sum(rate(stream_processor_claims_total{result=\"legitimate\"}[1m])) * 60", "legendFormat": "Legitimate" },
+            { "expr": "sum(rate(stream_processor_claims_total{result=\"fraud\"}[1m])) * 60",     "legendFormat": "Fraud" }
+          ],
+          "fieldConfig": { "defaults": { "unit": "short", "custom": { "lineWidth": 2 } },
+            "overrides": [
+              { "matcher": { "id": "byName", "options": "Fraud" },
+                "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] }
+            ] }
+        },
+        {
+          "id": 6, "type": "timeseries", "title": "Fraud Alerts by Risk Level",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            { "expr": "sum(rate(stream_processor_fraud_alerts_total{risk_level=\"CRITICAL\"}[1m])) * 60", "legendFormat": "CRITICAL" },
+            { "expr": "sum(rate(stream_processor_fraud_alerts_total{risk_level=\"HIGH\"}[1m])) * 60",     "legendFormat": "HIGH" },
+            { "expr": "sum(rate(stream_processor_fraud_alerts_total{risk_level=\"MEDIUM\"}[1m])) * 60",   "legendFormat": "MEDIUM" }
+          ],
+          "fieldConfig": { "defaults": { "unit": "short", "custom": { "lineWidth": 2 } } }
+        },
+        {
+          "id": 7, "type": "timeseries", "title": "Scoring Latency p50/p95/p99",
+          "gridPos": { "h": 7, "w": 12, "x": 0, "y": 12 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            { "expr": "histogram_quantile(0.50, sum(rate(stream_processor_scoring_duration_seconds_bucket[2m])) by (le)) * 1000", "legendFormat": "p50" },
+            { "expr": "histogram_quantile(0.95, sum(rate(stream_processor_scoring_duration_seconds_bucket[2m])) by (le)) * 1000", "legendFormat": "p95" },
+            { "expr": "histogram_quantile(0.99, sum(rate(stream_processor_scoring_duration_seconds_bucket[2m])) by (le)) * 1000", "legendFormat": "p99" }
+          ],
+          "fieldConfig": { "defaults": { "unit": "ms" } }
+        },
+        {
+          "id": 8, "type": "timeseries", "title": "ML Inferences by Risk Level",
+          "gridPos": { "h": 7, "w": 12, "x": 12, "y": 12 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [{ "expr": "sum(rate(fraud_scorer_inferences_total[1m])) by (risk_level) * 60", "legendFormat": "{{risk_level}}" }],
+          "fieldConfig": { "defaults": { "unit": "short" } }
+        }
+      ]
+    }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grafana-pvc
+  namespace: monitoring
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: monitoring
+  labels:
+    app: grafana
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana:10.3.3
+          ports:
+            - containerPort: 3000
+          env:
+            - name: GF_SECURITY_ADMIN_USER
+              value: admin
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              value: admin
+            - name: GF_USERS_ALLOW_SIGN_UP
+              value: "false"
+            - name: GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH
+              value: /var/lib/grafana/dashboards/fraud_platform.json
+          volumeMounts:
+            - name: grafana-storage
+              mountPath: /var/lib/grafana
+            - name: datasources
+              mountPath: /etc/grafana/provisioning/datasources
+            - name: dashboard-provider
+              mountPath: /etc/grafana/provisioning/dashboards
+            - name: dashboards
+              mountPath: /var/lib/grafana/dashboards
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+      volumes:
+        - name: grafana-storage
+          persistentVolumeClaim:
+            claimName: grafana-pvc
+        - name: datasources
+          configMap:
+            name: grafana-datasources
+        - name: dashboard-provider
+          configMap:
+            name: grafana-dashboard-provider
+        - name: dashboards
+          configMap:
+            name: grafana-dashboards
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: monitoring
+spec:
+  selector:
+    app: grafana
+  type: NodePort
+  ports:
+    - port: 3000
+      targetPort: 3000
+      nodePort: 30300     # → http://<node-ip>:30300  (admin/admin)

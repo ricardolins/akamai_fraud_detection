@@ -1,0 +1,22 @@
+# Redis Helm values (Bitnami) — online feature store / provider state cache
+# Production: Redis Cluster with persistence and ACL
+
+architecture: standalone
+
+auth:
+  enabled: false    # disabled for demo; production uses requirepass + ACL
+
+master:
+  persistence:
+    size: 4Gi
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+
+service:
+  type: ClusterIP
+  port: 6379

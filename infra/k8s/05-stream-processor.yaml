@@ -1,0 +1,61 @@
+# Stream Processor — mimics Apache Flink in the demo
+# Production: Apache Flink on LKE (4 separate jobs)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stream-processor
+  namespace: processing
+  labels:
+    app: stream-processor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: stream-processor
+  template:
+    metadata:
+      labels:
+        app: stream-processor
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port:   "8001"
+        prometheus.io/path:   "/metrics"
+    spec:
+      containers:
+        - name: stream-processor
+          image: REGISTRY/stream-processor:demo    # replaced by deploy.sh
+          ports:
+            - containerPort: 8001
+          env:
+            - name: KAFKA_BROKERS
+              value: redpanda.streaming.svc.cluster.local:9092
+            - name: FRAUD_SCORER_URL
+              value: http://fraud-scorer.ml.svc.cluster.local:8000
+            - name: REDIS_HOST
+              value: redis-master.data.svc.cluster.local
+            - name: REDIS_PORT
+              value: "6379"
+            - name: METRICS_PORT
+              value: "8001"
+            - name: FRAUD_THRESHOLD
+              value: "0.65"
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stream-processor
+  namespace: processing
+spec:
+  selector:
+    app: stream-processor
+  ports:
+    - port: 8001
+      targetPort: 8001

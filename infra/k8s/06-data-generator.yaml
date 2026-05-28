@@ -1,0 +1,47 @@
+# Data Generator — simulates the claims adjudication system
+# Production: replaced by the real claims system; Debezium handles CDC
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: data-generator
+  namespace: processing
+  labels:
+    app: data-generator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: data-generator
+  template:
+    metadata:
+      labels:
+        app: data-generator
+    spec:
+      containers:
+        - name: data-generator
+          image: REGISTRY/data-generator:demo    # replaced by deploy.sh
+          env:
+            - name: POSTGRES_HOST
+              value: postgres-postgresql.data.svc.cluster.local
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_DB
+              value: claims_db
+            - name: POSTGRES_USER
+              value: fraud_user
+            - name: POSTGRES_PASSWORD
+              value: fraud_pass
+            - name: KAFKA_BROKERS
+              value: redpanda.streaming.svc.cluster.local:9092
+            - name: CLAIMS_PER_SECOND
+              value: "2"
+            - name: FRAUD_RATE
+              value: "0.08"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"

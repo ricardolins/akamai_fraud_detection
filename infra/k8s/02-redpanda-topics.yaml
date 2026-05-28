@@ -1,0 +1,23 @@
+# One-shot Job that creates Redpanda topics after the broker is ready.
+# Runs rpk inside the Redpanda image — no separate tooling needed.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: redpanda-topic-init
+  namespace: streaming
+spec:
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: topic-init
+          image: docker.redpanda.com/redpandadata/redpanda:v23.3.12
+          command:
+            - /bin/bash
+            - -c
+            - |
+              rpk topic create raw.claims.new  --brokers redpanda:9092 --partitions 4 --replicas 1
+              rpk topic create scored.claims   --brokers redpanda:9092 --partitions 4 --replicas 1
+              rpk topic create alerts.fraud    --brokers redpanda:9092 --partitions 1 --replicas 1
+              echo "Topics created successfully"

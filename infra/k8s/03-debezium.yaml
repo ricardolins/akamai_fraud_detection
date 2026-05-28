@@ -1,0 +1,132 @@
+# Debezium Kafka Connect — PostgreSQL CDC to Redpanda
+# Captures INSERT/UPDATE/DELETE from claims table and publishes to Redpanda
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: debezium
+  namespace: streaming
+  labels:
+    app: debezium
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: debezium
+  template:
+    metadata:
+      labels:
+        app: debezium
+    spec:
+      containers:
+        - name: debezium
+          image: debezium/connect:2.5
+          ports:
+            - containerPort: 8083
+          env:
+            - name: BOOTSTRAP_SERVERS
+              value: redpanda.streaming.svc.cluster.local:9092
+            - name: GROUP_ID
+              value: debezium-cdc-group
+            - name: CONFIG_STORAGE_TOPIC
+              value: _debezium.configs
+            - name: OFFSET_STORAGE_TOPIC
+              value: _debezium.offsets
+            - name: STATUS_STORAGE_TOPIC
+              value: _debezium.status
+            - name: KEY_CONVERTER
+              value: org.apache.kafka.connect.json.JsonConverter
+            - name: VALUE_CONVERTER
+              value: org.apache.kafka.connect.json.JsonConverter
+            - name: KEY_CONVERTER_SCHEMAS_ENABLE
+              value: "false"
+            - name: VALUE_CONVERTER_SCHEMAS_ENABLE
+              value: "false"
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /connectors
+              port: 8083
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            failureThreshold: 8
+          livenessProbe:
+            httpGet:
+              path: /connectors
+              port: 8083
+            initialDelaySeconds: 90
+            periodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: debezium
+  namespace: streaming
+spec:
+  selector:
+    app: debezium
+  ports:
+    - port: 8083
+      targetPort: 8083
+---
+# One-shot Job: registers the PostgreSQL connector once Debezium is ready
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: debezium-connector-init
+  namespace: streaming
+spec:
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-for-debezium
+          image: curlimages/curl:8.6.0
+          command:
+            - /bin/sh
+            - -c
+            - |
+              until curl -sf http://debezium:8083/connectors; do
+                echo "Waiting for Debezium..."
+                sleep 10
+              done
+      containers:
+        - name: register-connector
+          image: curlimages/curl:8.6.0
+          command:
+            - /bin/sh
+            - -c
+            - |
+              curl -sf -X POST http://debezium:8083/connectors \
+                -H 'Content-Type: application/json' \
+                -d '{
+                  "name": "claims-postgres-connector",
+                  "config": {
+                    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+                    "database.hostname": "postgres-postgresql.data.svc.cluster.local",
+                    "database.port": "5432",
+                    "database.user": "fraud_user",
+                    "database.password": "fraud_pass",
+                    "database.dbname": "claims_db",
+                    "topic.prefix": "dbz",
+                    "table.include.list": "public.claims",
+                    "plugin.name": "pgoutput",
+                    "slot.name": "debezium_claims_slot",
+                    "publication.name": "debezium_publication",
+                    "transforms": "unwrap",
+                    "transforms.unwrap.type": "io.debezium.transforms.ExtractNewRecordState",
+                    "transforms.unwrap.add.fields": "op,ts_ms",
+                    "transforms.unwrap.drop.tombstones": "false",
+                    "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+                    "key.converter.schemas.enable": "false",
+                    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+                    "value.converter.schemas.enable": "false"
+                  }
+                }' && echo "Connector registered"

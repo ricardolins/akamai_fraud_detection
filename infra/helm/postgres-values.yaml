@@ -1,0 +1,32 @@
+# PostgreSQL Helm values (Bitnami) — claims source database
+# Production: managed PostgreSQL on Linode with replication
+
+auth:
+  username: fraud_user
+  password: fraud_pass
+  database: claims_db
+
+primary:
+  # Enable logical replication for Debezium CDC
+  extendedConfiguration: |
+    wal_level = logical
+    max_replication_slots = 5
+    max_wal_senders = 5
+
+  persistence:
+    size: 10Gi
+
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "1"
+      memory: "1Gi"
+
+  initdb:
+    scriptsConfigMap: postgres-initdb
+
+service:
+  type: ClusterIP
+  port: 5432

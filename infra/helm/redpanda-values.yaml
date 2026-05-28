@@ -1,0 +1,44 @@
+# Redpanda Helm values — Demo (single broker)
+# Production: statefulset.replicas: 3, dedicated node pool, tiered storage enabled
+
+statefulset:
+  replicas: 1     # demo mode; production uses 3
+
+resources:
+  cpu:
+    cores: 2
+  memory:
+    container:
+      max: "3Gi"
+
+storage:
+  persistentVolume:
+    size: 20Gi
+    storageClass: ""     # use LKE default StorageClass
+
+config:
+  cluster:
+    auto_create_topics_enabled: false
+
+listeners:
+  kafka:
+    port: 9092
+    external:
+      default:
+        enabled: false    # no external LoadBalancer for demo; use ClusterIP
+  schemaRegistry:
+    port: 8081
+  rpc:
+    port: 33145
+
+console:
+  enabled: true
+  service:
+    type: NodePort
+    nodePort: 30808     # → http://<node-ip>:30808
+
+monitoring:
+  enabled: true
+
+tls:
+  enabled: false        # disabled for demo; production enables mTLS

@@ -1,0 +1,53 @@
+# ConfigMap referenced by the PostgreSQL Helm chart (primary.initdb.scriptsConfigMap)
+# Runs the schema and seed SQL on first database initialization
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-initdb
+  namespace: data
+data:
+  01_schema.sql: |
+    CREATE TABLE IF NOT EXISTS providers (
+        npi         VARCHAR(20)   PRIMARY KEY,
+        name        VARCHAR(200)  NOT NULL,
+        specialty   VARCHAR(100)  NOT NULL,
+        license_no  VARCHAR(50),
+        status      VARCHAR(20)   DEFAULT 'ACTIVE',
+        created_at  TIMESTAMP     DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS members (
+        member_id   VARCHAR(20)  PRIMARY KEY,
+        plan_id     VARCHAR(20),
+        status      VARCHAR(20)  DEFAULT 'ACTIVE',
+        enrolled_at DATE         DEFAULT CURRENT_DATE
+    );
+
+    CREATE TABLE IF NOT EXISTS claims (
+        id              SERIAL        PRIMARY KEY,
+        claim_id        VARCHAR(30)   UNIQUE NOT NULL,
+        provider_npi    VARCHAR(20)   NOT NULL REFERENCES providers(npi),
+        member_id       VARCHAR(20)   NOT NULL,
+        procedure_code  VARCHAR(10)   NOT NULL,
+        diagnosis_code  VARCHAR(15)   NOT NULL,
+        amount          NUMERIC(12,2) NOT NULL,
+        service_date    DATE          NOT NULL,
+        submitted_at    TIMESTAMP     NOT NULL DEFAULT NOW(),
+        status          VARCHAR(20)   DEFAULT 'PENDING',
+        created_at      TIMESTAMP     DEFAULT NOW()
+    );
+
+    ALTER TABLE claims REPLICA IDENTITY FULL;
+
+    CREATE INDEX idx_claims_provider  ON claims(provider_npi);
+    CREATE INDEX idx_claims_member    ON claims(member_id);
+    CREATE INDEX idx_claims_submitted ON claims(submitted_at);
+
+  02_seed.sql: |
+    INSERT INTO providers (npi, name, specialty, status) VALUES
+        ('NPI-001', 'Cardio Clinic SP',   'CARDIOLOGY',    'ACTIVE'),
+        ('NPI-002', 'Ortho Hospital',     'ORTHOPEDICS',   'ACTIVE'),
+        ('NPI-003', 'MedLab Diagnostics', 'LABORATORY',    'ACTIVE'),
+        ('NPI-004', 'PhysioPlus',         'PHYSIOTHERAPY', 'ACTIVE'),
+        ('NPI-005', 'Suspect Clinic',     'CARDIOLOGY',    'ACTIVE')
+    ON CONFLICT (npi) DO NOTHING;
