@@ -1,0 +1,338 @@
+version: "3.8"
+
+# Healthcare Fraud Detection — Local Demo Environment
+# Maps to the production architecture on Akamai Linode / LKE.
+# See docs/demo_guide.md for the full walkthrough.
+
+networks:
+  fraud-net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:
+  mlflow_data:
+
+services:
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STREAMING BACKBONE
+  # Production: Redpanda Enterprise cluster (3 nodes on Linode VMs)
+  # Demo:       Single Redpanda node
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v23.3.12
+    container_name: redpanda
+    command:
+      - redpanda
+      - start
+      - --smp=2
+      - --memory=1G
+      - --reserve-memory=0M
+      - --overprovisioned
+      - --node-id=0
+      - --check=false
+      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr=internal://redpanda:9092,external://localhost:19092
+      - --schema-registry-addr=internal://0.0.0.0:8081,external://0.0.0.0:18081
+      - --rpc-addr=redpanda:33145
+      - --advertise-rpc-addr=redpanda:33145
+      - --pandaproxy-addr=internal://0.0.0.0:8082,external://0.0.0.0:18082
+      - --advertise-pandaproxy-addr=internal://redpanda:8082,external://localhost:18082
+    ports:
+      - "19092:19092"    # Kafka API (external)
+      - "18081:18081"    # Schema Registry (external)
+      - "18082:18082"    # REST Proxy (external)
+      - "9644:9644"      # Prometheus metrics
+    networks:
+      - fraud-net
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy.*true'"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 30s
+
+  # Redpanda Console — visual UI for topics, consumer groups, schema registry
+  redpanda-console:
+    image: docker.redpanda.com/redpandadata/console:v2.4.5
+    container_name: redpanda-console
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+      KAFKA_SCHEMAREGISTRY_ENABLED: "true"
+      KAFKA_SCHEMAREGISTRY_URLS: http://redpanda:8081
+    ports:
+      - "8080:8080"   # → http://localhost:8080
+    networks:
+      - fraud-net
+
+  # Create topics on startup
+  redpanda-init:
+    image: docker.redpanda.com/redpandadata/redpanda:v23.3.12
+    container_name: redpanda-init
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command: |
+      "
+      rpk topic create raw.claims.new  --brokers redpanda:9092 --partitions 4 --replicas 1 &&
+      rpk topic create scored.claims   --brokers redpanda:9092 --partitions 4 --replicas 1 &&
+      rpk topic create alerts.fraud    --brokers redpanda:9092 --partitions 1 --replicas 1 &&
+      echo '✓ Topics created'
+      "
+    networks:
+      - fraud-net
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SOURCE DATABASE
+  # Production: Managed PostgreSQL on Linode / claims system
+  # Demo:       PostgreSQL with logical replication enabled for Debezium CDC
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres
+    environment:
+      POSTGRES_DB:       claims_db
+      POSTGRES_USER:     fraud_user
+      POSTGRES_PASSWORD: fraud_pass
+    command:
+      - postgres
+      - -c
+      - wal_level=logical           # required for Debezium CDC
+      - -c
+      - max_replication_slots=5
+      - -c
+      - max_wal_senders=5
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init_db:/docker-entrypoint-initdb.d   # runs 01_schema.sql, 02_seed_providers.sql
+    ports:
+      - "5432:5432"
+    networks:
+      - fraud-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fraud_user -d claims_db"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CDC — Change Data Capture
+  # Production: Debezium on LKE (Kafka Connect cluster)
+  # Demo:       Debezium standalone — publishes PostgreSQL WAL to Redpanda
+  # Topic:      dbz.public.claims  (prefix.schema.table)
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  debezium:
+    image: debezium/connect:2.5
+    container_name: debezium
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    environment:
+      BOOTSTRAP_SERVERS:      redpanda:9092
+      GROUP_ID:               debezium-cdc-group
+      CONFIG_STORAGE_TOPIC:   _debezium.configs
+      OFFSET_STORAGE_TOPIC:   _debezium.offsets
+      STATUS_STORAGE_TOPIC:   _debezium.status
+      KEY_CONVERTER:          org.apache.kafka.connect.json.JsonConverter
+      VALUE_CONVERTER:        org.apache.kafka.connect.json.JsonConverter
+      KEY_CONVERTER_SCHEMAS_ENABLE:   "false"
+      VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+    ports:
+      - "8083:8083"
+    networks:
+      - fraud-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8083/connectors"]
+      interval: 15s
+      timeout: 10s
+      retries: 12
+      start_period: 60s
+
+  debezium-init:
+    image: curlimages/curl:8.6.0
+    container_name: debezium-init
+    depends_on:
+      debezium:
+        condition: service_healthy
+    volumes:
+      - ./debezium/connector.json:/connector.json:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command: |
+      "curl -sf -X POST http://debezium:8083/connectors \
+        -H 'Content-Type: application/json' \
+        -d @/connector.json && echo '✓ Debezium connector registered'"
+    networks:
+      - fraud-net
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ONLINE CACHE / FEATURE STORE
+  # Production: Redis on LKE (Feast online store)
+  # Demo:       Redis — stores rolling provider/member stats used for scoring
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - fraud-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ML MODEL SERVING
+  # Production: BentoML on LKE serving an XGBoost model from MLflow registry
+  # Demo:       FastAPI service that trains a GBM on synthetic data at startup
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  fraud-scorer:
+    build:
+      context: ./fraud_scorer
+      dockerfile: Dockerfile
+    container_name: fraud-scorer
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "8000:8000"   # → http://localhost:8000/docs
+    networks:
+      - fraud-net
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 45s
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ML EXPERIMENT TRACKING
+  # Production: MLflow on LKE with artifact store on Linode Object Storage
+  # Demo:       MLflow with local filesystem backend
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.11.0
+    container_name: mlflow
+    command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri /mlflow/db --default-artifact-root /mlflow/artifacts
+    volumes:
+      - mlflow_data:/mlflow
+    ports:
+      - "5000:5000"   # → http://localhost:5000
+    networks:
+      - fraud-net
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STREAM PROCESSOR
+  # Production: Apache Flink on LKE (4 jobs: enrich, rules, ML, alerts)
+  # Demo:       Python consumer combining all 4 Flink jobs in one process
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  stream-processor:
+    build:
+      context: ./stream_processor
+      dockerfile: Dockerfile
+    container_name: stream-processor
+    depends_on:
+      redpanda-init:
+        condition: service_completed_successfully
+      fraud-scorer:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKERS:    redpanda:9092
+      FRAUD_SCORER_URL: http://fraud-scorer:8000
+      REDIS_HOST:       redis
+      REDIS_PORT:       "6379"
+      METRICS_PORT:     "8001"
+      FRAUD_THRESHOLD:  "0.65"
+    ports:
+      - "8001:8001"   # Prometheus metrics
+    networks:
+      - fraud-net
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # DATA GENERATOR
+  # Production: This role is played by the real claims adjudication system
+  # Demo:       Python script that generates synthetic legitimate + fraudulent claims
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  data-generator:
+    build:
+      context: ./data_generator
+      dockerfile: Dockerfile
+    container_name: data-generator
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+    environment:
+      POSTGRES_HOST:     postgres
+      POSTGRES_PORT:     "5432"
+      POSTGRES_DB:       claims_db
+      POSTGRES_USER:     fraud_user
+      POSTGRES_PASSWORD: fraud_pass
+      KAFKA_BROKERS:     redpanda:9092
+      CLAIMS_PER_SECOND: "2"      # adjust to speed up/slow down demo
+      FRAUD_RATE:        "0.08"   # 8% fraud rate
+    networks:
+      - fraud-net
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # OBSERVABILITY
+  # Production: Prometheus + Grafana + Loki + Tempo on LKE
+  # Demo:       Prometheus + Grafana (metrics only)
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  prometheus:
+    image: prom/prometheus:v2.50.1
+    container_name: prometheus
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    ports:
+      - "9090:9090"
+    networks:
+      - fraud-net
+
+  grafana:
+    image: grafana/grafana:10.3.3
+    container_name: grafana
+    depends_on:
+      - prometheus
+    environment:
+      GF_SECURITY_ADMIN_USER:     admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP:     "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/fraud_platform.json
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"   # → http://localhost:3000  (admin/admin)
+    networks:
+      - fraud-net

@@ -1,0 +1,26 @@
+{
+  "name": "claims-postgres-connector",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "database.hostname": "postgres",
+    "database.port": "5432",
+    "database.user": "fraud_user",
+    "database.password": "fraud_pass",
+    "database.dbname": "claims_db",
+    "topic.prefix": "dbz",
+    "table.include.list": "public.claims",
+    "plugin.name": "pgoutput",
+    "slot.name": "debezium_claims_slot",
+    "publication.name": "debezium_publication",
+    "transforms": "unwrap",
+    "transforms.unwrap.type": "io.debezium.transforms.ExtractNewRecordState",
+    "transforms.unwrap.add.fields": "op,ts_ms",
+    "transforms.unwrap.drop.tombstones": "false",
+    "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "key.converter.schemas.enable": "false",
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter.schemas.enable": "false",
+    "heartbeat.interval.ms": "10000",
+    "snapshot.mode": "initial"
+  }
+}

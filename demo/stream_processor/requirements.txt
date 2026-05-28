@@ -1,0 +1,4 @@
+confluent-kafka==2.3.0
+redis==5.0.3
+requests==2.31.0
+prometheus-client==0.20.0
