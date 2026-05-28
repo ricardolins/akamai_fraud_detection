@@ -165,7 +165,7 @@ gold/      Aggregated, feature-engineered, ML-ready
 
 **Storage layout:**
 ```
-s3://amil-datalake/
+s3://fraud-datalake/
   bronze/claims/year=2026/month=05/day=28/
   silver/claims/year=2026/month=05/
   gold/features/provider_profiles/snapshot_date=2026-05-28/

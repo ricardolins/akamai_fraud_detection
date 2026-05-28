@@ -1,6 +1,6 @@
 # Healthcare Fraud Detection Platform — Provider Comparison
 
-**Use case:** Healthcare fraud detection for Amil — ingestion from databases/logs/files, real-time + batch ML scoring  
+**Use case:** Healthcare fraud detection — ingestion from databases/logs/files, real-time + batch ML scoring  
 **Baseline:** Open source stack on Akamai Cloud Linode (detailed in [architecture.md](architecture.md))  
 **Compared against:** Databricks (cloud-agnostic), AWS, Microsoft Azure, Google Cloud Platform
 
@@ -157,7 +157,7 @@ GitOps:          Azure DevOps + GitHub Actions
 
 **Strengths for fraud detection:**
 - **Event Hubs Kafka compatibility** — producers/consumers using Kafka SDK work without code changes. This is the best Kafka-compatible managed service outside of Confluent.
-- **Azure AD / Entra ID** — if Amil already uses Microsoft 365, identity integration is seamless; single SSO for data platform access
+- **Azure AD / Entra ID** — if the organization already uses Microsoft 365, identity integration is seamless; single SSO for data platform access
 - **Microsoft Defender for Healthcare** — purpose-built security for HIPAA workloads, including PHI detection in ADLS and anomaly alerts
 - **Microsoft Purview** — data governance with automatic PHI classification, lineage tracking across Synapse/ADF/ADLS, and audit reports — strong LGPD compliance tooling
 - **HIPAA BAA available**; Azure is the #1 cloud for healthcare in the US
@@ -171,7 +171,7 @@ GitOps:          Azure DevOps + GitHub Actions
 - **Azure ML maturity:** Behind SageMaker and Databricks for MLOps workflows; model serving scalability lags.
 - **Vendor lock-in:** ADF pipelines, Synapse SQL, Azure ML pipelines — all proprietary.
 
-**When Azure wins:** When Amil already has an Enterprise Agreement with Microsoft, and the IT team is Azure/Active Directory native. The identity and governance story (Purview + Entra ID) is the strongest of any provider for healthcare compliance.
+**When Azure wins:** When the organization already has an Enterprise Agreement with Microsoft, and the IT team is Azure/Active Directory native. The identity and governance story (Purview + Entra ID) is the strongest of any provider for healthcare compliance.
 
 ---
 
@@ -309,7 +309,7 @@ This is the most important dimension for fraud detection — latency between a f
 - You need the widest ecosystem of healthcare data partners
 
 ### Choose Azure when:
-- Amil already has a Microsoft Enterprise Agreement (significant discount opportunity)
+- The organization already has a Microsoft Enterprise Agreement (significant discount opportunity)
 - Active Directory / Entra ID is the identity backbone and SSO matters
 - Microsoft Purview for automatic PHI discovery and LGPD lineage is valued
 - The team is Microsoft-ecosystem native (Azure DevOps, Teams integration)
@@ -333,7 +333,7 @@ Azure               ★★      ★★★     ★★★★    ★★★     ★�
 GCP                 ★★★     ★★★★    ★★★★★   ★★★★    ★★★★        ★★
 ```
 
-**Recommendation for Amil's fraud detection platform:**
+**Recommendation for this fraud detection platform:**
 
 The Akamai Linode + OSS architecture is the right long-term foundation because: (1) cost advantage compounds over time, (2) Redpanda Enterprise's streaming performance is unmatched for real-time scoring, and (3) full PHI data control is a genuine compliance advantage over control-plane-sharing managed services.
 
