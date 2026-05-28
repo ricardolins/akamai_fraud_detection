@@ -1,0 +1,21 @@
+# Spark Operator (kubeflow/spark-operator) Helm values
+# Manages SparkApplication and ScheduledSparkApplication CRDs on LKE
+
+webhook:
+  enable: true
+  port: 8080
+
+sparkJobNamespace: processing
+
+controller:
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"
+
+metrics:
+  enable: true
+  port: 10254

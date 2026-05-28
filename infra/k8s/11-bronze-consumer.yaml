@@ -1,0 +1,44 @@
+# Bronze Consumer — ingests raw claims from Redpanda into the bronze zone
+# Reads: raw.claims.new (Redpanda)
+# Writes: s3://fraud-datalake/bronze/claims/year=YYYY/month=MM/day=DD/*.jsonl
+#
+# This is the immutable raw layer — full fidelity, no transformations, PHI present.
+# Spark ETL (silver-etl SparkApplication) reads from here daily.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bronze-consumer
+  namespace: processing
+  labels:
+    app: bronze-consumer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bronze-consumer
+  template:
+    metadata:
+      labels:
+        app: bronze-consumer
+    spec:
+      containers:
+        - name: bronze-consumer
+          image: REGISTRY/bronze-consumer:demo    # replaced by deploy.sh
+          envFrom:
+            - secretRef:
+                name: object-storage-credentials
+          env:
+            - name: KAFKA_BROKERS
+              value: redpanda.streaming.svc.cluster.local:9092
+            - name: BATCH_SIZE
+              value: "200"
+            - name: FLUSH_INTERVAL
+              value: "30"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"

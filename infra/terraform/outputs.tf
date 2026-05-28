@@ -28,6 +28,28 @@ output "api_endpoints" {
   value       = linode_lke_cluster.fraud_demo.api_endpoints
 }
 
+output "object_storage_endpoint" {
+  description = "S3-compatible endpoint for Linode Object Storage"
+  value       = "https://${var.region}-1.linodeobjects.com"
+}
+
+output "object_storage_bucket" {
+  description = "Data lake bucket name"
+  value       = linode_object_storage_bucket.datalake.label
+}
+
+output "object_storage_access_key" {
+  description = "Object Storage access key (S3-compatible)"
+  value       = linode_object_storage_key.datalake.access_key
+  sensitive   = true
+}
+
+output "object_storage_secret_key" {
+  description = "Object Storage secret key (S3-compatible)"
+  value       = linode_object_storage_key.datalake.secret_key
+  sensitive   = true
+}
+
 output "next_steps" {
   description = "Commands to run after terraform apply"
   value       = <<-EOT

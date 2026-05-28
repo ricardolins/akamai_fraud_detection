@@ -69,6 +69,28 @@ kubectl apply -f "$K8S_DIR/00-namespaces.yaml"
 ok "Namespaces created"
 echo ""
 
+# ── STEP 2.5: Propagate Object Storage credentials to Kubernetes ─────────────────
+info "Step 2.5 — Creating object-storage-credentials secret from Terraform outputs..."
+
+cd "$TF_DIR"
+S3_ACCESS_KEY=$(terraform output -raw object_storage_access_key)
+S3_SECRET_KEY=$(terraform output -raw object_storage_secret_key)
+S3_BUCKET=$(terraform output -raw object_storage_bucket)
+S3_ENDPOINT=$(terraform output -raw object_storage_endpoint)
+cd "$SCRIPT_DIR"
+
+for ns in processing data; do
+    kubectl create secret generic object-storage-credentials \
+        --namespace "$ns" \
+        --from-literal=AWS_ACCESS_KEY_ID="$S3_ACCESS_KEY" \
+        --from-literal=AWS_SECRET_ACCESS_KEY="$S3_SECRET_KEY" \
+        --from-literal=AWS_ENDPOINT_URL_S3="$S3_ENDPOINT" \
+        --from-literal=BUCKET="$S3_BUCKET" \
+        --dry-run=client -o yaml | kubectl apply -f -
+done
+ok "Object Storage secret created in processing + data namespaces"
+echo ""
+
 # ── STEP 3: Install infrastructure via Helm ──────────────────────────────────────
 info "Step 3 — Installing Helm charts (Redpanda, PostgreSQL, Redis)..."
 
@@ -96,6 +118,14 @@ info "  Installing Redis..."
 helm upgrade --install redis bitnami/redis \
     --namespace data \
     --values "$HELM_DIR/redis-values.yaml" \
+    --timeout 5m \
+    --wait
+
+info "  Installing Spark Operator..."
+helm repo add spark-operator https://kubeflow.github.io/spark-operator --force-update
+helm upgrade --install spark-operator spark-operator/spark-operator \
+    --namespace processing \
+    --values "$HELM_DIR/spark-operator-values.yaml" \
     --timeout 5m \
     --wait
 
@@ -128,6 +158,31 @@ done
 ok "Custom service manifests applied"
 echo ""
 
+# ── STEP 5.5: Deploy medallion data lake services ───────────────────────────────
+info "Step 5.5 — Deploying medallion data lake (Nessie, RBAC, bronze consumer)..."
+
+kubectl apply -f "$K8S_DIR/10-nessie.yaml"
+kubectl apply -f "$K8S_DIR/12-spark-rbac.yaml"
+
+# bronze-consumer uses the object-storage-credentials secret; replace REGISTRY placeholder
+sed "s|REGISTRY/|$REGISTRY/|g; s|:demo|:$TAG|g" "$K8S_DIR/11-bronze-consumer.yaml" | kubectl apply -f -
+
+wait_for_pods data      "app=nessie"           120
+wait_for_pods processing "app=bronze-consumer" 120
+
+ok "Medallion services deployed"
+echo ""
+
+# ── STEP 5.6: Apply Spark scheduled jobs ────────────────────────────────────────
+info "Step 5.6 — Applying Spark ETL scheduled jobs..."
+
+# Replace REGISTRY and S3 endpoint placeholders before applying
+sed "s|REGISTRY/|$REGISTRY/|g; s|:demo|:$TAG|g; s|S3_ENDPOINT_PLACEHOLDER|$S3_ENDPOINT|g" \
+    "$K8S_DIR/13-spark-jobs.yaml" | kubectl apply -f -
+
+ok "Spark ScheduledSparkApplications registered (silver-etl: daily 02:00, gold-features: Sunday 04:00)"
+echo ""
+
 # ── STEP 6: Deploy observability ────────────────────────────────────────────────
 info "Step 6 — Deploying Prometheus and Grafana..."
 kubectl apply -f "$K8S_DIR/08-prometheus.yaml"
@@ -140,6 +195,8 @@ info "Step 7 — Waiting for workloads to become ready (up to 5 min)..."
 wait_for_pods ml           "app=fraud-scorer"     240
 wait_for_pods processing   "app=stream-processor" 120
 wait_for_pods processing   "app=data-generator"   120
+wait_for_pods processing   "app=bronze-consumer"  120
+wait_for_pods data         "app=nessie"           120
 wait_for_pods ml           "app=mlflow"           120
 wait_for_pods monitoring   "app=prometheus"       120
 wait_for_pods monitoring   "app=grafana"          120
