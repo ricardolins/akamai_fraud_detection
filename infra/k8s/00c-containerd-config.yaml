@@ -1,0 +1,84 @@
+# DaemonSet — configures containerd on every LKE node to trust the in-cluster HTTP registry.
+#
+# How it works:
+#   1. Runs a privileged init container on each node
+#   2. Reads the registry NodeIP from the registry-node-ip ConfigMap (created by deploy.sh)
+#   3. Writes /etc/containerd/certs.d/<REGISTRY_IP>:32500/hosts.toml with skip_verify=true
+#   4. Sends SIGHUP to containerd so the config is reloaded without a full restart
+#   5. The main container is a pause that keeps the DaemonSet pod alive
+#
+# deploy.sh creates the ConfigMap before applying this manifest.
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: containerd-registry-config
+  namespace: tools
+  labels:
+    app: containerd-registry-config
+spec:
+  selector:
+    matchLabels:
+      app: containerd-registry-config
+  template:
+    metadata:
+      labels:
+        app: containerd-registry-config
+    spec:
+      hostPID: true
+      tolerations:
+        - operator: Exists
+      initContainers:
+        - name: configure
+          image: busybox:1.36
+          securityContext:
+            privileged: true
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              REGISTRY_IP=$(cat /config/ip)
+              REGISTRY_ADDR="${REGISTRY_IP}:32500"
+
+              echo "[containerd-config] Configuring containerd to trust http://$REGISTRY_ADDR"
+
+              mkdir -p /host-etc/containerd/certs.d/${REGISTRY_ADDR}
+              cat > /host-etc/containerd/certs.d/${REGISTRY_ADDR}/hosts.toml << EOF
+              server = "http://${REGISTRY_ADDR}"
+
+              [host."http://${REGISTRY_ADDR}"]
+                capabilities = ["pull", "resolve"]
+                skip_verify = true
+              EOF
+
+              echo "[containerd-config] hosts.toml written:"
+              cat /host-etc/containerd/certs.d/${REGISTRY_ADDR}/hosts.toml
+
+              # Reload containerd config (SIGHUP triggers config reload in containerd >=1.5)
+              CONTAINERD_PID=$(nsenter --mount=/proc/1/ns/mnt -- pidof containerd 2>/dev/null || echo "")
+              if [ -n "$CONTAINERD_PID" ]; then
+                nsenter --mount=/proc/1/ns/mnt -- kill -HUP $CONTAINERD_PID
+                echo "[containerd-config] Sent SIGHUP to containerd PID=$CONTAINERD_PID"
+              else
+                echo "[containerd-config] containerd PID not found — skipping reload signal"
+              fi
+
+              echo "[containerd-config] Done."
+          volumeMounts:
+            - name: host-etc
+              mountPath: /host-etc
+            - name: registry-ip
+              mountPath: /config
+      containers:
+        - name: pause
+          image: gcr.io/google_containers/pause:3.9
+          resources:
+            requests:
+              cpu: "1m"
+              memory: "8Mi"
+      volumes:
+        - name: host-etc
+          hostPath:
+            path: /etc
+        - name: registry-ip
+          configMap:
+            name: registry-node-ip
