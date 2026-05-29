@@ -51,3 +51,12 @@ data:
         ('NPI-004', 'PhysioPlus',         'PHYSIOTHERAPY', 'ACTIVE'),
         ('NPI-005', 'Suspect Clinic',     'CARDIOLOGY',    'ACTIVE')
     ON CONFLICT (npi) DO NOTHING;
+
+  03_debezium_setup.sql: |
+    -- Grant REPLICATION privilege so Debezium can open a WAL sender connection
+    ALTER ROLE fraud_user REPLICATION LOGIN;
+
+    -- Create the Debezium logical replication publication for the claims table.
+    -- Must be created by a superuser; Debezium connector uses
+    -- publication.autocreate.mode=disabled and expects this to exist.
+    CREATE PUBLICATION debezium_publication FOR TABLE claims;

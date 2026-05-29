@@ -120,6 +120,7 @@ spec:
                     "plugin.name": "pgoutput",
                     "slot.name": "debezium_claims_slot",
                     "publication.name": "debezium_publication",
+                    "publication.autocreate.mode": "disabled",
                     "transforms": "unwrap",
                     "transforms.unwrap.type": "io.debezium.transforms.ExtractNewRecordState",
                     "transforms.unwrap.add.fields": "op,ts_ms",

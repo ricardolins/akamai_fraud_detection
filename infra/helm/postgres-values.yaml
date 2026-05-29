@@ -5,6 +5,8 @@ auth:
   username: fraud_user
   password: fraud_pass
   database: claims_db
+  # REPLICATION privilege is required for Debezium CDC via WAL
+  postgresPassword: NRSX4tEzud
 
 primary:
   # Enable logical replication for Debezium CDC
@@ -12,6 +14,14 @@ primary:
     wal_level = logical
     max_replication_slots = 5
     max_wal_senders = 5
+
+  pgHbaConfiguration: |
+    host     all             all             0.0.0.0/0               md5
+    host     all             all             ::/0                    md5
+    local    all             all                                     md5
+    host     all             all             127.0.0.1/32            md5
+    host     all             all             ::1/128                 md5
+    host     replication     fraud_user      0.0.0.0/0               md5
 
   persistence:
     enabled: false   # emptyDir for demo; no block storage quota consumed
