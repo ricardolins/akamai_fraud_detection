@@ -15,6 +15,9 @@ infra/terraform/*.tfvars
 secrets/
 *secret*
 
+# Large dependency JARs (download with infra/spark-jobs/download-deps.sh)
+infra/spark-jobs/aws-java-sdk-bundle-*.jar
+
 # macOS
 .DS_Store
 
