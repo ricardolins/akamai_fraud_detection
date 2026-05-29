@@ -58,18 +58,6 @@ data:
               - redpanda.streaming.svc.cluster.local:9644
         metrics_path: /public_metrics
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: prometheus-pvc
-  namespace: monitoring
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 10Gi
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -114,8 +102,7 @@ spec:
           configMap:
             name: prometheus-config
         - name: storage
-          persistentVolumeClaim:
-            claimName: prometheus-pvc
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: ServiceAccount

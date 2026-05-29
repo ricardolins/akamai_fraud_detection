@@ -137,18 +137,6 @@ data:
       ]
     }
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: grafana-pvc
-  namespace: monitoring
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 2Gi
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -198,8 +186,7 @@ spec:
               memory: "512Mi"
       volumes:
         - name: grafana-storage
-          persistentVolumeClaim:
-            claimName: grafana-pvc
+          emptyDir: {}
         - name: datasources
           configMap:
             name: grafana-datasources

@@ -3,7 +3,7 @@
 
 webhook:
   enable: true
-  port: 8080
+  port: 9443
 
 sparkJobNamespace: processing
 

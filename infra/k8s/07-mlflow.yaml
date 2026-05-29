@@ -1,18 +1,6 @@
 # MLflow — experiment tracking and model registry
 # Production: backed by Linode Object Storage (artifact store) + PostgreSQL (metadata)
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: mlflow-pvc
-  namespace: ml
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 10Gi
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -54,8 +42,7 @@ spec:
               memory: "512Mi"
       volumes:
         - name: mlflow-storage
-          persistentVolumeClaim:
-            claimName: mlflow-pvc
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

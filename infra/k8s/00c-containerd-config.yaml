@@ -1,10 +1,12 @@
-# DaemonSet — writes a containerd certs.d config on every LKE node to trust
-# the in-cluster HTTP registry (NodePort 32500).
+# DaemonSet — configures containerd on every LKE node to trust the in-cluster
+# HTTP registry (NodePort 32500).
 #
-# containerd >= 1.5 reads /etc/containerd/certs.d/ on every image pull request,
-# so no daemon restart or SIGHUP is needed — writing the file is sufficient.
-#
-# deploy.sh creates the registry-node-ip ConfigMap before applying this manifest.
+# Strategy:
+#   1. Write hosts.toml (idempotent)
+#   2. Patch config_path in config.toml once (guarded by flag file)
+#   3. Create flag file BEFORE sending SIGHUP so that if containerd kills
+#      this container during its reload (exit 255), the next restart skips
+#      the SIGHUP and exits cleanly — breaking the crash loop.
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -22,6 +24,7 @@ spec:
       labels:
         app: containerd-registry-config
     spec:
+      hostPID: true
       tolerations:
         - operator: Exists
       initContainers:
@@ -29,22 +32,52 @@ spec:
           image: busybox:1.36
           securityContext:
             privileged: true
-          command: ["/bin/sh", "-c"]
+          command: ["/bin/sh"]
           args:
+            - "-c"
             - |
-              set -e
               REGISTRY_IP=$(cat /config/ip)
               REGISTRY_ADDR="${REGISTRY_IP}:32500"
               CERT_DIR="/host-etc/containerd/certs.d/${REGISTRY_ADDR}"
+              CONFIG_TOML="/host-etc/containerd/config.toml"
+              FLAG="/host-etc/containerd/.registry-configured"
 
-              echo "[containerd-config] Writing trust config for http://${REGISTRY_ADDR}"
+              # Registry ClusterIP is always reachable from any node without
+              # going through the public interface or Linode firewall.
+              REGISTRY_CLUSTER_IP="${REGISTRY_CLUSTER_IP:-10.128.208.162}"
+              REGISTRY_CLUSTER_PORT="${REGISTRY_CLUSTER_PORT:-5000}"
+
+              echo "[containerd-config] Writing hosts.toml for ${REGISTRY_ADDR} → http://${REGISTRY_CLUSTER_IP}:${REGISTRY_CLUSTER_PORT}"
               mkdir -p "${CERT_DIR}"
+              printf 'server = "http://%s"\n\n[host."http://%s:%s"]\n  capabilities = ["pull", "resolve"]\n  skip_verify = true\n' \
+                "${REGISTRY_ADDR}" "${REGISTRY_CLUSTER_IP}" "${REGISTRY_CLUSTER_PORT}" > "${CERT_DIR}/hosts.toml"
 
-              printf 'server = "http://%s"\n\n[host."http://%s"]\n  capabilities = ["pull", "resolve"]\n  skip_verify = true\n' \
-                "${REGISTRY_ADDR}" "${REGISTRY_ADDR}" > "${CERT_DIR}/hosts.toml"
+              if [ -f "$FLAG" ]; then
+                echo "[containerd-config] Already configured, skipping SIGHUP. Done."
+                exit 0
+              fi
 
-              echo "[containerd-config] hosts.toml:"
-              cat "${CERT_DIR}/hosts.toml"
+              echo "[containerd-config] Patching config_path in config.toml"
+              if grep -q 'config_path = ""' "${CONFIG_TOML}"; then
+                sed -i 's|config_path = ""|config_path = "/etc/containerd/certs.d"|g' "${CONFIG_TOML}"
+                echo "[containerd-config] config_path patched."
+              else
+                echo "[containerd-config] config_path already set."
+              fi
+
+              echo "[containerd-config] Creating flag file before SIGHUP"
+              touch "$FLAG"
+
+              echo "[containerd-config] Sending SIGHUP to containerd"
+              ls -d /proc/[0-9]* 2>/dev/null | while read d; do
+                comm=$(cat "$d/comm" 2>/dev/null)
+                if [ "$comm" = "containerd" ]; then
+                  pid=$(basename "$d")
+                  kill -HUP "$pid" 2>/dev/null && echo "[containerd-config] SIGHUP sent to PID $pid"
+                  break
+                fi
+              done
+
               echo "[containerd-config] Done."
           volumeMounts:
             - name: host-etc

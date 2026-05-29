@@ -55,6 +55,23 @@ resource "linode_firewall" "cluster_fw" {
     ports    = "1-65535"
     ipv4     = ["10.0.0.0/8", "192.168.0.0/16", "172.16.0.0/12"]
   }
+
+  # Calico IPIP tunneling (protocol 4) — LKE uses IP-in-IP for cross-node pod routing.
+  # Without this, pods on different nodes cannot communicate.
+  inbound {
+    label    = "allow-ipip"
+    action   = "ACCEPT"
+    protocol = "IPENCAP"
+    ipv4     = ["10.0.0.0/8", "192.168.0.0/16", "172.16.0.0/12"]
+  }
+
+  # ICMP — kubelet node health checks and network diagnostics
+  inbound {
+    label    = "allow-icmp"
+    action   = "ACCEPT"
+    protocol = "ICMP"
+    ipv4     = ["10.0.0.0/8", "192.168.0.0/16", "172.16.0.0/12"]
+  }
 }
 
 # Attach the firewall to every LKE worker node

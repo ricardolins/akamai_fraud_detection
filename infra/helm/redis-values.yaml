@@ -8,7 +8,7 @@ auth:
 
 master:
   persistence:
-    size: 4Gi
+    enabled: false  # emptyDir for demo; no block storage quota consumed
   resources:
     requests:
       cpu: "100m"

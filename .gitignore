@@ -1,0 +1,26 @@
+# Kubernetes credentials
+.kubeconfig-demo
+kubeconfig*
+*.kubeconfig
+
+# Terraform state and providers
+infra/terraform/.terraform/
+infra/terraform/terraform.tfstate
+infra/terraform/terraform.tfstate.backup
+infra/terraform/*.tfvars
+
+# Secrets and credentials
+*.env
+.env*
+secrets/
+*secret*
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/

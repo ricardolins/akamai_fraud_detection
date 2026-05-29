@@ -14,7 +14,7 @@ primary:
     max_wal_senders = 5
 
   persistence:
-    size: 10Gi
+    enabled: false   # emptyDir for demo; no block storage quota consumed
 
   resources:
     requests:

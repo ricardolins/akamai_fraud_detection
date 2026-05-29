@@ -38,7 +38,7 @@ console:
     nodePort: 30808     # → http://<node-ip>:30808
 
 monitoring:
-  enabled: true
+  enabled: false
 
 tls:
   enabled: false        # disabled for demo; production enables mTLS
