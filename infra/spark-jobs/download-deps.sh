@@ -5,15 +5,23 @@ set -euo pipefail
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
-JAR="aws-java-sdk-bundle-1.12.262.jar"
-URL="https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/1.12.262/${JAR}"
-DEST="${DIR}/${JAR}"
+download() {
+  local jar="$1" url="$2" dest="${DIR}/${1}"
+  if [ -f "$dest" ]; then
+    echo "${jar} already present, skipping download."
+    return 0
+  fi
+  echo "Downloading ${jar} ..."
+  curl -fL --progress-bar -o "$dest" "$url"
+  echo "Done: $dest"
+}
 
-if [ -f "$DEST" ]; then
-  echo "${JAR} already present, skipping download."
-  exit 0
-fi
+download "aws-java-sdk-bundle-1.12.262.jar" \
+  "https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/1.12.262/aws-java-sdk-bundle-1.12.262.jar"
 
-echo "Downloading ${JAR} ..."
-curl -fL --progress-bar -o "$DEST" "$URL"
-echo "Done: $DEST"
+# Needed for org.apache.iceberg.aws.s3.S3FileIO (the Nessie/Iceberg catalog's
+# write path) — it depends on the AWS SDK v2 classes, which aws-java-sdk-bundle
+# (v1, used by hadoop-aws's S3AFileSystem for the s3a:// bronze read path)
+# does not provide.
+download "iceberg-aws-bundle-1.5.2.jar" \
+  "https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-aws-bundle/1.5.2/iceberg-aws-bundle-1.5.2.jar"

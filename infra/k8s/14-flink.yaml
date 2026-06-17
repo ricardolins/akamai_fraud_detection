@@ -1,0 +1,54 @@
+# Real Apache Flink stream processing job — replaces the Python mimic in
+# 05-stream-processor.yaml (demo/stream_processor/processor.py).
+#
+# Same pipeline (enrich -> rules -> ML score -> alert), but provider/member
+# rolling stats now live in genuine Flink keyed state (RocksDB) instead of
+# Redis, and Kafka I/O runs through the real Flink Kafka connector.
+---
+apiVersion: flink.apache.org/v1beta1
+kind: FlinkDeployment
+metadata:
+  name: fraud-stream-job
+  namespace: processing
+spec:
+  image: REGISTRY/flink-jobs:demo    # replaced by deploy.sh
+  imagePullPolicy: Always
+  flinkVersion: v1_18
+  serviceAccount: flink
+  flinkConfiguration:
+    taskmanager.numberOfTaskSlots: "2"
+    state.backend.type: "rocksdb"
+    state.checkpoints.dir: "file:///flink-data/checkpoints"
+    state.savepoints.dir: "file:///flink-data/savepoints"
+    execution.checkpointing.interval: "60000"
+  podTemplate:
+    spec:
+      containers:
+        - name: flink-main-container
+          env:
+            - name: KAFKA_BROKERS
+              value: redpanda.streaming.svc.cluster.local:9092
+            - name: FRAUD_SCORER_URL
+              value: http://fraud-scorer.ml.svc.cluster.local:8000
+            - name: FRAUD_THRESHOLD
+              value: "0.65"
+          volumeMounts:
+            - name: flink-data
+              mountPath: /flink-data
+      volumes:
+        - name: flink-data
+          emptyDir: {}
+  jobManager:
+    resource:
+      memory: "1024m"
+      cpu: 1
+  taskManager:
+    resource:
+      memory: "2048m"
+      cpu: 1
+  job:
+    jarURI: local:///opt/flink/opt/flink-python_2.12-1.18.1.jar
+    entryClass: "org.apache.flink.client.python.PythonDriver"
+    args: ["-pyclientexec", "/usr/bin/python3", "-py", "/opt/flink/usrlib/fraud_stream_job.py"]
+    parallelism: 2
+    upgradeMode: stateless

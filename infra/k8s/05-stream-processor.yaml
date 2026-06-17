@@ -1,5 +1,8 @@
-# Stream Processor — mimics Apache Flink in the demo
-# Production: Apache Flink on LKE (4 separate jobs)
+# Stream Processor — Python mimic of the real Flink pipeline, kept as a
+# documented fallback. The live path is the FlinkDeployment in 14-flink.yaml
+# (fraud_stream_job.py), which replaced this as the active consumer of
+# raw.claims.new. Scale this back to 1 only if the Flink job needs to be
+# taken down for troubleshooting.
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -9,7 +12,7 @@ metadata:
   labels:
     app: stream-processor
 spec:
-  replicas: 1
+  replicas: 0
   selector:
     matchLabels:
       app: stream-processor

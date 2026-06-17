@@ -185,11 +185,12 @@ ok "Object Storage secret created in processing + data namespaces"
 echo ""
 
 # ── STEP 8: Install infrastructure via Helm ──────────────────────────────────────
-info "Step 8 — Installing Helm charts (Redpanda, PostgreSQL, Redis, Spark Operator)..."
+info "Step 8 — Installing Helm charts (Redpanda, PostgreSQL, Redis, Spark Operator, Flink Operator)..."
 
 helm repo add redpanda      https://charts.redpanda.com        --force-update
 helm repo add bitnami       https://charts.bitnami.com/bitnami --force-update
 helm repo add spark-operator https://kubeflow.github.io/spark-operator --force-update
+helm repo add flink-operator-repo https://downloads.apache.org/flink/flink-kubernetes-operator-1.14.0/ --force-update
 helm repo update
 
 info "  Installing Redpanda..."
@@ -218,6 +219,13 @@ info "  Installing Spark Operator..."
 helm upgrade --install spark-operator spark-operator/spark-operator \
     --namespace processing \
     --values "$HELM_DIR/spark-operator-values.yaml" \
+    --timeout 5m \
+    --wait
+
+info "  Installing Flink Kubernetes Operator..."
+helm upgrade --install flink-kubernetes-operator flink-operator-repo/flink-kubernetes-operator \
+    --namespace processing \
+    --values "$HELM_DIR/flink-operator-values.yaml" \
     --timeout 5m \
     --wait
 
@@ -266,8 +274,14 @@ sed "s|REGISTRY/|$REGISTRY/|g; s|:demo|:$TAG|g; s|S3_ENDPOINT_PLACEHOLDER|$S3_EN
 ok "Spark ScheduledSparkApplications registered (silver-etl: daily 02:00, gold-features: Sunday 04:00)"
 echo ""
 
-# ── STEP 13: Deploy observability ────────────────────────────────────────────────
-info "Step 13 — Deploying Prometheus and Grafana..."
+# ── STEP 13: Deploy the real Flink stream processing job ────────────────────────
+info "Step 13 — Deploying FlinkDeployment (fraud-stream-job)..."
+sed "s|REGISTRY/|$REGISTRY/|g; s|:demo|:$TAG|g" "$K8S_DIR/14-flink.yaml" | kubectl apply -f -
+ok "FlinkDeployment applied — replaces stream-processor as the live consumer of raw.claims.new"
+echo ""
+
+# ── STEP 14: Deploy observability ────────────────────────────────────────────────
+info "Step 14 — Deploying Prometheus and Grafana..."
 kubectl apply -f "$K8S_DIR/08-prometheus.yaml"
 kubectl apply -f "$K8S_DIR/09-grafana.yaml"
 ok "Observability deployed"

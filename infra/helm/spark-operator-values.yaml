@@ -5,7 +5,9 @@ webhook:
   enable: true
   port: 9443
 
-sparkJobNamespace: processing
+spark:
+  jobNamespaces:
+    - processing
 
 controller:
   resources:

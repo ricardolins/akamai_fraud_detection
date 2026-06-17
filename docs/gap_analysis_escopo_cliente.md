@@ -181,11 +181,13 @@ fraud-media/
 
 | Modo | Componente | Status |
 |---|---|---|
-| **Batch** | Spark + Airflow + MLflow | Arquitetado, configuração necessária |
-| **Real-Time** | Flink + BentoML (inference endpoint) | Arquitetado, configuração necessária |
+| **Batch** | Spark + Airflow + MLflow | ✅ silver-etl rodando no LKE (3.1M linhas → Iceberg). ⚠️ gold-features com bug de skew conhecido (ver `infra/spark-jobs/gold_features.py`), não corrigido ainda |
+| **Real-Time** | Flink + BentoML (inference endpoint) | ✅ Rodando no LKE (Flink Kubernetes Operator, fraud-stream-job) |
 | **On-demand** | FastAPI → BentoML | Arquitetado, configuração necessária |
 
 Todos os modelos são Python-native — XGBoost, LightGBM, scikit-learn, PyTorch são suportados pelo BentoML sem adaptação.
+
+Detalhes da implantação real (passo a passo, causas raiz e roteiro de demonstração) em `docs/flink_spark_implantacao_real.md`.
 
 ---
 
@@ -198,7 +200,7 @@ Todos os modelos são Python-native — XGBoost, LightGBM, scikit-learn, PyTorch
 | **API REST** | FastAPI (scoring API) | Arquitetado |
 | **URLs customizadas** | FastAPI rotas customizadas | Arquitetado |
 | **SQL** | Trino sobre Iceberg | Arquitetado |
-| **Spark / PySpark / SparkSQL** | Spark Operator no LKE | Arquitetado |
+| **Spark / PySpark / SparkSQL** | Spark Operator no LKE | ✅ Rodando |
 | **NoSQL** | Redis (feature store online) | Arquitetado |
 
 Para o acesso SQL por analistas (fase Viewer), Trino é o motor recomendado — expõe as tabelas Iceberg como se fossem tabelas SQL padrão, sem mover dados.

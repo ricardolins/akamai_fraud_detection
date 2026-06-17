@@ -2,9 +2,46 @@
 
 Este guia percorre cada camada da plataforma de ponta a ponta, desde a modelagem do banco de dados até o resultado do modelo de Machine Learning. O objetivo é que qualquer pessoa consiga entender **o que acontece, por quê acontece e como verificar** em cada etapa.
 
+> Para o deploy completo no Linode LKE, ver `docs/linode_deploy.md`.
+> Para a história da migração Python → Flink/Spark, ver `docs/flink_spark_implantacao_real.md`.
+
 ---
 
-## Pré-requisitos
+## Opção A — Demo Local (Docker Compose)
+
+Não precisa de cluster Kubernetes. Usa o mesmo Linode Object Storage do LKE.
+
+```bash
+# 1. Exporte as credenciais do Object Storage (Terraform já provisionou o bucket)
+export AWS_ACCESS_KEY_ID=$(cd infra/terraform && terraform output -raw object_storage_access_key)
+export AWS_SECRET_ACCESS_KEY=$(cd infra/terraform && terraform output -raw object_storage_secret_key)
+export AWS_ENDPOINT_URL_S3=$(cd infra/terraform && terraform output -raw object_storage_endpoint)
+export BUCKET=$(cd infra/terraform && terraform output -raw object_storage_bucket)
+
+# 2. Suba todos os serviços (~3 min na primeira vez — Flink e Spark compilam do source)
+cd demo/
+make start
+
+# 3. Acompanhe as detecções em tempo real
+make logs-alerts
+
+# 4. Após alguns minutos com dados acumulando no Object Storage, rode os ETLs
+make etl-silver    # Spark: bronze Object Storage → silver Iceberg
+make etl-gold      # Spark: silver Iceberg → gold feature tables
+```
+
+| Serviço | URL local |
+|---|---|
+| Redpanda Console | http://localhost:8080 |
+| Fraud Scorer API | http://localhost:8000/docs |
+| MLflow | http://localhost:5000 |
+| Grafana | http://localhost:3000 (admin/admin) |
+| Prometheus | http://localhost:9090 |
+| Nessie API | http://localhost:19120/api/v1/config |
+
+---
+
+## Opção B — Cluster LKE (Akamai Linode)
 
 ```bash
 # Configure o acesso ao cluster
@@ -434,7 +471,7 @@ No Redpanda Console → **Consumer Groups**, você verá os grupos ativos:
 
 | Group ID | Tópico | Lag | Significado |
 |---|---|---|---|
-| `stream-processor-demo` | `raw.claims.new` | 0–5 | Stream Processor consumindo em tempo real |
+| `flink-fraud-stream-v2` | `raw.claims.new` | 0–5 | Job Flink (`fraud-stream-job`) consumindo em tempo real |
 | `bronze-consumer-demo` | `raw.claims.new` | 0–50 | Bronze Consumer, slight lag (escreve em batches de 30s) |
 
 Lag próximo de zero indica que os consumidores estão acompanhando a produção. Se o lag crescer, indica que o processamento está mais lento do que a ingestão.
@@ -442,16 +479,24 @@ Lag próximo de zero indica que os consumidores estão acompanhando a produção
 ```bash
 # Verificar via linha de comando
 kubectl exec -n streaming redpanda-0 -- \
-  rpk group describe stream-processor-demo
+  rpk group describe flink-fraud-stream-v2
 ```
 
 ---
 
-## Camada 4 — Stream Processing
+## Camada 4 — Stream Processing (Apache Flink)
 
 ### O que é e por que está aqui
 
-O **Stream Processor** é o "cérebro em tempo real" da plataforma. Ele consome cada claim do Redpanda, enriquece com contexto, aplica regras determinísticas e consulta o modelo de ML — tudo isso antes de publicar o resultado. Em produção este papel é do Apache Flink; na demonstração é um processo Python que replica o mesmo comportamento.
+O **Apache Flink** é o cérebro em tempo real da plataforma. Ele consome cada claim do Redpanda, enriquece com contexto acumulado (keyed state em RocksDB), aplica regras determinísticas e consulta o modelo de ML — tudo antes de publicar o resultado, com latência sub-segundo.
+
+**No LKE:** `FlinkDeployment` CRD gerenciado pelo Flink Kubernetes Operator (`infra/k8s/14-flink.yaml`). O job Python (`infra/flink-jobs/fraud_stream_job.py`) roda em PyFlink 1.18 com RocksDB como state backend e checkpoints automáticos a cada 60s para o Object Storage.
+
+**Na demo local (Docker Compose):** mesmo `fraud_stream_job.py` rodando em modo local (mini-cluster PyFlink em processo único).
+
+O antigo processo Python (`demo/stream_processor/processor.py`) fica em `05-stream-processor.yaml` com `replicas: 0` — fallback documentado, desativado. Nunca delete: serve para troubleshooting se o Flink job precisar ser interrompido.
+
+Para a história completa da migração (causas raiz, bugs encontrados, validação), ver `docs/flink_spark_implantacao_real.md`.
 
 ### Fluxo de processamento de uma claim
 
@@ -480,45 +525,38 @@ raw.claims.new
     └  → log WARNING se FRAUD
 ```
 
-### Etapa 1 — Enriquecimento com Redis
+### Etapa 1 — Enriquecimento com Flink Keyed State (RocksDB)
 
-O **Redis** armazena estatísticas acumuladas por prestador e beneficiário. Isso resolve o problema de "contexto": para saber se um valor de R$8.750 é suspeito, precisamos saber qual é o valor médio histórico daquele prestador.
+O Flink mantém estatísticas acumuladas **dentro do próprio job**, em **keyed state** gerenciado pelo RocksDB — sem depender do Redis para essa função.
 
-**Chave no Redis para prestadores:** `ps:{provider_npi}` (hash com campos `sum` e `count`)
-
-```bash
-kubectl exec -n data deploy/redis-master -- redis-cli HGETALL ps:NPI-005
-```
-
-```
-1) "sum"
-2) "432180.50"
-3) "count"
-4) "47"
-```
-
-Média calculada: R$432.180,50 ÷ 47 = **R$ 9.195** — muito acima da média de um prestador legítimo.
-
-```bash
-kubectl exec -n data deploy/redis-master -- redis-cli HGETALL ps:NPI-003
-```
-
-```
-1) "sum"
-2) "3960.00"
-3) "count"
-4) "22"
-```
-
-Média: R$180 — comportamento normal para um laboratório.
-
-A cada nova claim, o pipeline executa:
+**Como funciona:** o operador `ProviderEnrichFunction` é particionado por `provider_npi`. Todas as claims do mesmo prestador chegam sempre ao mesmo TaskManager, que mantém o estado localmente:
 
 ```python
-pipe.hincrbyfloat("ps:NPI-005", "sum",   8750.0)  # atualiza soma
-pipe.hincrby(     "ps:NPI-005", "count", 1)        # incrementa contagem
-pipe.expire(      "ps:NPI-005", 30 * 86400)        # TTL de 30 dias
+class ProviderEnrichFunction(KeyedProcessFunction):
+    def open(self, runtime_context):
+        descriptor = ValueStateDescriptor("provider-stats", Types.PICKLED_BYTE_ARRAY())
+        descriptor.enable_time_to_live(_ttl(30))   # expira após 30 dias sem atividade
+        self.state = runtime_context.get_state(descriptor)
+
+    def process_element(self, claim, ctx):
+        stats = self.state.value() or {"sum": 0.0, "count": 0}
+        stats["sum"] += claim["amount"]
+        stats["count"] += 1
+        self.state.update(stats)
+        claim["claim_count_30d"] = stats["count"]
+        claim["avg_amount_30d"] = round(stats["sum"] / stats["count"], 2)
+        yield claim
 ```
+
+Para inspecionar o estado acumulado por prestador, consulte os logs do TaskManager:
+```bash
+kubectl logs -n processing -l component=taskmanager | grep "provider=NPI-005" | tail -5
+```
+
+**Por que RocksDB e não Redis?**
+- Estado co-localizado com o processamento: **zero latência de rede** na leitura/escrita
+- Checkpoints automáticos a cada 60s vão para o Object Storage — estado sobrevive a reinicializações
+- Redis continua presente no cluster para o **Feast feature store** (features de serving em tempo real), não para o estado do Flink
 
 ### Etapa 2 — Score por Regras
 
@@ -589,16 +627,29 @@ final = max(rule_score, ml_score * 0.6 + rule_score * 0.4)
 | < 0.40 | LOW |
 | ≥ 0.65 | → publica em `alerts.fraud` |
 
-### Ver o Stream Processor em execução
+### Ver o Flink job em execução
 
 ```bash
-kubectl logs -f -n processing deploy/stream-processor | grep FRAUD
+# Status do FlinkDeployment (LKE)
+kubectl get flinkdeployment -n processing
+# NAME               JOB STATUS   LIFECYCLE STATE
+# fraud-stream-job   RUNNING      STABLE
+
+# Logs de fraudes em tempo real (TaskManager)
+kubectl logs -f -n processing -l component=taskmanager | grep FRAUD
 ```
 
 ```
 14:22:18  WARNING  FRAUD [CRITICAL ] CLM-D9E4A102  provider=NPI-005  amount=R$  8,750.00  score=0.9312  rules=['PROCEDURE_DIAGNOSIS_MISMATCH', 'AMOUNT_3X_PROVIDER_AVG']
 14:22:24  WARNING  FRAUD [HIGH    ] CLM-F1B3C007  provider=NPI-001  amount=R$  3,140.00  score=0.7821  rules=['AMOUNT_3X_PROVIDER_AVG']
 14:22:31  WARNING  FRAUD [CRITICAL ] CLM-88EA5D12  provider=NPI-005  amount=R$ 12,050.00  score=0.9601  rules=['EXTREME_AMOUNT', 'PROCEDURE_DIAGNOSIS_MISMATCH']
+```
+
+**Na demo local (Docker Compose):**
+```bash
+make logs-alerts    # equivalente ao grep FRAUD acima
+# ou
+docker compose logs -f flink-fraud-stream | grep FRAUD
 ```
 
 ---
@@ -1097,18 +1148,7 @@ curl -s "http://localhost:19120/api/v1/trees/tree/main/entries" | python3 -m jso
 
 ### Prometheus — coleta de métricas
 
-O Prometheus faz scrape automático das métricas expostas pelos pods a cada 10 segundos. Acesse **http://104.64.45.51:30909**.
-
-**Métricas do Stream Processor:**
-
-| Métrica | Tipo | Descrição |
-|---|---|---|
-| `stream_processor_claims_total{result="fraud"}` | Counter | Claims classificadas como fraude |
-| `stream_processor_claims_total{result="legitimate"}` | Counter | Claims legítimas |
-| `stream_processor_fraud_alerts_total{risk_level="CRITICAL"}` | Counter | Alertas CRITICAL |
-| `stream_processor_fraud_alerts_total{risk_level="HIGH"}` | Counter | Alertas HIGH |
-| `stream_processor_scoring_duration_seconds` | Histogram | Latência end-to-end do scoring |
-| `stream_processor_active_providers` | Gauge | Prestadores com estado no Redis |
+O Prometheus faz scrape automático das métricas expostas pelos pods a cada 5 segundos. Acesse **http://NODE_IP:30909** (LKE) ou **http://localhost:9090** (Docker Compose).
 
 **Métricas do Fraud Scorer:**
 
@@ -1117,19 +1157,32 @@ O Prometheus faz scrape automático das métricas expostas pelos pods a cada 10 
 | `fraud_scorer_inferences_total{risk_level="..."}` | Counter | Inferências por nível de risco |
 | `fraud_scorer_latency_seconds` | Histogram | Latência do modelo (p50/p95/p99) |
 
+**Métricas do Redpanda (consumer lag):**
+
+| Métrica | Tipo | Descrição |
+|---|---|---|
+| `vectorized_kafka_consumer_group_committed_offset` | Gauge | Offset commitado por grupo |
+| `vectorized_kafka_replicas_committed_offset` | Gauge | Offset atual da partição |
+
+A diferença entre os dois dá o **consumer lag** — se crescer, o Flink está processando mais devagar que o Redpanda está recebendo.
+
+```bash
+# Ver consumer lag do grupo Flink via CLI
+kubectl exec -n streaming redpanda-0 -- \
+  rpk group describe flink-fraud-stream-v2
+```
+
 **Queries úteis no Prometheus:**
 
 ```promql
-# Taxa de fraudes por minuto
-sum(rate(stream_processor_fraud_alerts_total{risk_level=~"HIGH|CRITICAL"}[1m])) * 60
-
 # Latência p99 do modelo de ML
 histogram_quantile(0.99, sum(rate(fraud_scorer_latency_seconds_bucket[2m])) by (le)) * 1000
 
-# % de claims que são fraude
-sum(rate(stream_processor_claims_total{result="fraud"}[5m])) /
-sum(rate(stream_processor_claims_total[5m])) * 100
+# Total de inferências por nível de risco
+sum(fraud_scorer_inferences_total) by (risk_level)
 ```
+
+> **Nota:** O Flink expõe métricas JVM nativas (heap, GC, checkpoint duration) via o Flink Metrics Reporter. Para visualizá-las no Grafana, é necessário configurar o `PrometheusReporter` no `flinkConfiguration` do `FlinkDeployment` — etapa prevista para a fase de produção (ver `docs/architecture.md`, seção 5).
 
 ### Grafana — dashboard em tempo real
 
@@ -1171,15 +1224,17 @@ T+2ms    PostgreSQL grava no WAL (replication slot: debezium_claims_slot)
 T+5ms    Debezium lê o WAL, serializa para JSON, publica em raw.claims.new
          Chave: "NPI-005" (routing para partição 1 dos 4)
 
-T+8ms    Stream Processor consome da partição 1
+T+8ms    Flink (ProviderEnrichFunction) consome da partição 1
+         keyBy(provider_npi="NPI-005") → TaskManager 1
 
-T+9ms    Enriquecimento (Redis):
-         HGETALL ps:NPI-005 → sum=432180.50, count=47
+T+9ms    Enriquecimento (RocksDB keyed state):
+         state["NPI-005"] → {sum: 432180.50, count: 47}
          avg_amount_30d = 432180.50 / 47 = R$9.195
 
-         HGETALL ms:MBR-1003 → count=1 (beneficiário com poucas claims)
+         keyBy(member_id="MBR-1003") → MemberEnrichFunction
+         state["MBR-1003"] → count=1 (beneficiário com poucas claims)
 
-T+11ms   Score por Regras:
+T+11ms   Score por Regras (ScoreFunction):
          R1: 8750 > 9195 * 3.0? → 8750 > 27.585? Não  (prestador já tem média alta)
          R3: procedure=27447 (ortopedia) + diagnosis=I10 (cardiovascular) → MISMATCH
              rule_score = 0.93, triggered_rules = ["PROCEDURE_DIAGNOSIS_MISMATCH"]
@@ -1199,7 +1254,7 @@ T+40ms   Publica em scored.claims (sempre)
               amount=R$ 8,750.00  score=0.9312
               rules=['PROCEDURE_DIAGNOSIS_MISMATCH']
 
-T+45s    Prometheus scrape: stream_processor_fraud_alerts_total{risk_level="CRITICAL"} += 1
+T+45s    Prometheus scrape: fraud_scorer_inferences_total{risk_level="CRITICAL"} += 1
 
 T+50s    Grafana atualiza dashboard (intervalo de 5s)
          → spike vermelho visível no painel "Fraud Alerts by Risk Level"
@@ -1261,18 +1316,32 @@ kubectl set env -n processing deploy/data-generator \
 
 ```bash
 # Status de todos os pods
-kubectl get pods -A --field-selector=status.phase!=Running 2>/dev/null || echo "Todos Running"
+kubectl get pods -A --sort-by=.metadata.namespace
 
-# Stream Processor — últimas detecções
-kubectl logs -n processing deploy/stream-processor --tail=20 | grep -E "FRAUD|ERROR"
+# Flink job — status e últimas detecções
+kubectl get flinkdeployment -n processing
+kubectl logs -n processing -l component=taskmanager --tail=20 | grep -E "FRAUD|ERROR"
 
 # Bronze Consumer — último flush
 kubectl logs -n processing deploy/bronze-consumer --tail=5
 
+# Spark jobs agendados
+kubectl get scheduledsparkapplication -n processing
+
 # Redpanda — broker saudável
 kubectl exec -n streaming redpanda-0 -- rpk cluster health
+
+# Consumer lag do Flink
+kubectl exec -n streaming redpanda-0 -- rpk group describe flink-fraud-stream-v2
 
 # Debezium — conector ativo
 kubectl exec -n streaming deploy/debezium -- \
   curl -s http://localhost:8083/connectors/claims-postgres-connector/status | python3 -m json.tool
+```
+
+**Na demo local (Docker Compose):**
+```bash
+make status          # docker compose ps
+make logs-flink      # logs do flink-fraud-stream
+make logs-bronze     # logs do bronze-consumer
 ```

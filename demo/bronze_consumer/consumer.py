@@ -58,7 +58,12 @@ def _s3():
     kwargs = {
         "aws_access_key_id": ACCESS_KEY,
         "aws_secret_access_key": SECRET_KEY,
-        "config": Config(signature_version="s3v4"),
+        "config": Config(
+            signature_version="s3v4",
+            # MinIO (and Linode Object Storage) require path-style addressing.
+            # Without this, boto3 tries bucket.host:port which fails on local endpoints.
+            s3={"addressing_style": "path"},
+        ),
     }
     if S3_ENDPOINT:
         kwargs["endpoint_url"] = S3_ENDPOINT

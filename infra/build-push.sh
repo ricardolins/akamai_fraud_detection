@@ -51,6 +51,7 @@ done
 
 # Build Spark jobs image (uses infra/spark-jobs, not demo/)
 echo "──────────────────────────────────────────"
+"$REPO_ROOT/infra/spark-jobs/download-deps.sh"
 SPARK_IMAGE="$REGISTRY/spark-jobs:$TAG"
 echo "Building $SPARK_IMAGE"
 echo "  context: $REPO_ROOT/infra/spark-jobs"
@@ -58,6 +59,17 @@ docker build --platform linux/amd64 -t "$SPARK_IMAGE" "$REPO_ROOT/infra/spark-jo
 echo "Pushing  $SPARK_IMAGE"
 docker push "$SPARK_IMAGE"
 echo "✓ spark-jobs done"
+echo ""
+
+# Build Flink job image (uses infra/flink-jobs, not demo/)
+echo "──────────────────────────────────────────"
+FLINK_IMAGE="$REGISTRY/flink-jobs:$TAG"
+echo "Building $FLINK_IMAGE"
+echo "  context: $REPO_ROOT/infra/flink-jobs"
+docker build --platform linux/amd64 -t "$FLINK_IMAGE" "$REPO_ROOT/infra/flink-jobs"
+echo "Pushing  $FLINK_IMAGE"
+docker push "$FLINK_IMAGE"
+echo "✓ flink-jobs done"
 echo ""
 
 echo "══════════════════════════════════════════"

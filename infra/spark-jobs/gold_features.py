@@ -9,6 +9,15 @@ Targets:
   nessie.gold.claim_features     — per-claim feature vector (joins both, used by ML)
 
 Run weekly (Sunday 04:00 UTC) via ScheduledSparkApplication (see 13-spark-jobs.yaml).
+
+KNOWN ISSUE (2026-06-16): fails with executor exit 134 on the demo dataset.
+The 30d/90d rangeBetween windows in build_provider_features/build_member_features
+hold every row of a partition in memory at once; the demo's intentionally
+injected high-volume "phantom billing" provider has enough claims in a single
+30-day window to exceed any executor's memory regardless of how much is given
+to it (skewed key, not a cluster capacity problem). Needs salting on
+provider_npi_token/member_id_token before the window, or a bounded
+rowsBetween frame instead of an unbounded rangeBetween. Not yet fixed.
 """
 
 import os

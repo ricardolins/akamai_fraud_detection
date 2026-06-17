@@ -1,0 +1,19 @@
+# Apache Flink Kubernetes Operator Helm values
+# Manages FlinkDeployment / FlinkSessionJob CRDs on LKE
+
+watchNamespaces:
+  - processing
+
+operatorPod:
+  resources:
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+
+# Disabled: validating/mutating webhook requires cert-manager, which is not
+# part of this cluster's stack. The operator works fine without it.
+webhook:
+  create: false

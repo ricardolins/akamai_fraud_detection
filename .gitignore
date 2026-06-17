@@ -17,6 +17,7 @@ secrets/
 
 # Large dependency JARs (download with infra/spark-jobs/download-deps.sh)
 infra/spark-jobs/aws-java-sdk-bundle-*.jar
+infra/spark-jobs/iceberg-aws-bundle-*.jar
 
 # macOS
 .DS_Store

@@ -80,7 +80,7 @@ def main() -> None:
 
     df_silver = (
         df
-        .withColumn("event_time", F.to_timestamp("event_time"))
+        .withColumn("event_time", F.to_timestamp("submitted_at"))
         .filter(
             F.col("claim_id").isNotNull()
             & F.col("member_id").isNotNull()

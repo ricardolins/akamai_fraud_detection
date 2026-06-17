@@ -3,6 +3,24 @@ version: "3.8"
 # Healthcare Fraud Detection — Local Demo Environment
 # Maps to the production architecture on Akamai Linode / LKE.
 # See docs/demo_guide.md for the full walkthrough.
+#
+# PREREQUISITES — export Linode Object Storage credentials before starting:
+#
+#   export AWS_ACCESS_KEY_ID=$(cd ../infra/terraform && terraform output -raw object_storage_access_key)
+#   export AWS_SECRET_ACCESS_KEY=$(cd ../infra/terraform && terraform output -raw object_storage_secret_key)
+#   export AWS_ENDPOINT_URL_S3=$(cd ../infra/terraform && terraform output -raw object_storage_endpoint)
+#   export BUCKET=$(cd ../infra/terraform && terraform output -raw object_storage_bucket)
+#
+# Then:  make start
+#
+# DEFAULT SERVICES (make start  /  docker-compose up --build -d):
+#   Redpanda · PostgreSQL · Redis · Debezium · fraud-scorer · data-generator
+#   bronze-consumer · Nessie · MLflow · Prometheus · Grafana
+#   flink-fraud-stream  ← real PyFlink job (replaces the old Python stream-processor)
+#
+# BATCH ETL (run after data-generator has been running for a few minutes):
+#   make etl-silver   →  Spark bronze → silver (tokeniza PHI, Iceberg via Nessie)
+#   make etl-gold     →  Spark silver → gold   (feature aggregation para ML)
 
 networks:
   fraud-net:
@@ -56,7 +74,6 @@ services:
       retries: 8
       start_period: 30s
 
-  # Redpanda Console — visual UI for topics, consumer groups, schema registry
   redpanda-console:
     image: docker.redpanda.com/redpandadata/console:v2.4.5
     container_name: redpanda-console
@@ -72,7 +89,6 @@ services:
     networks:
       - fraud-net
 
-  # Create topics on startup
   redpanda-init:
     image: docker.redpanda.com/redpandadata/redpanda:v23.3.12
     container_name: redpanda-init
@@ -92,7 +108,7 @@ services:
 
   # ─────────────────────────────────────────────────────────────────────────────
   # SOURCE DATABASE
-  # Production: Managed PostgreSQL on Linode / claims system
+  # Production: Managed PostgreSQL on Linode
   # Demo:       PostgreSQL with logical replication enabled for Debezium CDC
   # ─────────────────────────────────────────────────────────────────────────────
 
@@ -106,14 +122,14 @@ services:
     command:
       - postgres
       - -c
-      - wal_level=logical           # required for Debezium CDC
+      - wal_level=logical
       - -c
       - max_replication_slots=5
       - -c
       - max_wal_senders=5
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./init_db:/docker-entrypoint-initdb.d   # runs 01_schema.sql, 02_seed_providers.sql
+      - ./init_db:/docker-entrypoint-initdb.d
     ports:
       - "5432:5432"
     networks:
@@ -128,7 +144,6 @@ services:
   # CDC — Change Data Capture
   # Production: Debezium on LKE (Kafka Connect cluster)
   # Demo:       Debezium standalone — publishes PostgreSQL WAL to Redpanda
-  # Topic:      dbz.public.claims  (prefix.schema.table)
   # ─────────────────────────────────────────────────────────────────────────────
 
   debezium:
@@ -140,13 +155,13 @@ services:
       redpanda:
         condition: service_healthy
     environment:
-      BOOTSTRAP_SERVERS:      redpanda:9092
-      GROUP_ID:               debezium-cdc-group
-      CONFIG_STORAGE_TOPIC:   _debezium.configs
-      OFFSET_STORAGE_TOPIC:   _debezium.offsets
-      STATUS_STORAGE_TOPIC:   _debezium.status
-      KEY_CONVERTER:          org.apache.kafka.connect.json.JsonConverter
-      VALUE_CONVERTER:        org.apache.kafka.connect.json.JsonConverter
+      BOOTSTRAP_SERVERS:              redpanda:9092
+      GROUP_ID:                       debezium-cdc-group
+      CONFIG_STORAGE_TOPIC:           _debezium.configs
+      OFFSET_STORAGE_TOPIC:           _debezium.offsets
+      STATUS_STORAGE_TOPIC:           _debezium.status
+      KEY_CONVERTER:                  org.apache.kafka.connect.json.JsonConverter
+      VALUE_CONVERTER:                org.apache.kafka.connect.json.JsonConverter
       KEY_CONVERTER_SCHEMAS_ENABLE:   "false"
       VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
     ports:
@@ -177,9 +192,9 @@ services:
       - fraud-net
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # ONLINE CACHE / FEATURE STORE
+  # ONLINE CACHE
   # Production: Redis on LKE (Feast online store)
-  # Demo:       Redis — stores rolling provider/member stats used for scoring
+  # Demo:       Redis
   # ─────────────────────────────────────────────────────────────────────────────
 
   redis:
@@ -199,8 +214,8 @@ services:
 
   # ─────────────────────────────────────────────────────────────────────────────
   # ML MODEL SERVING
-  # Production: BentoML on LKE serving an XGBoost model from MLflow registry
-  # Demo:       FastAPI service that trains a GBM on synthetic data at startup
+  # Production: BentoML on LKE serving XGBoost from MLflow registry
+  # Demo:       FastAPI + GBM treinado em dados sintéticos no startup
   # ─────────────────────────────────────────────────────────────────────────────
 
   fraud-scorer:
@@ -223,56 +238,98 @@ services:
       start_period: 45s
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # ML EXPERIMENT TRACKING
-  # Production: MLflow on LKE with artifact store on Linode Object Storage
-  # Demo:       MLflow with local filesystem backend
+  # STREAM PROCESSING — Apache Flink (PyFlink, local mini-cluster mode)
+  # Production: FlinkDeployment CRD via Flink Kubernetes Operator (14-flink.yaml)
+  # Demo:       fraud_stream_job.py em PyFlink local — mesmo runtime e APIs,
+  #             sem JobManager/TaskManager separados.
+  #
+  # Pipeline:
+  #   raw.claims.new
+  #     → keyBy(provider_npi) → ProviderEnrichFunction  (RocksDB keyed state, 30d TTL)
+  #     → keyBy(member_id)    → MemberEnrichFunction     (RocksDB keyed state, 90d TTL)
+  #     → ScoreFunction       (rules + fraud-scorer HTTP)
+  #     → scored.claims | alerts.fraud (score ≥ 0.65)
+  #
+  # Nota: o build (~3 min na primeira vez) baixa o Flink Kafka connector do Maven.
   # ─────────────────────────────────────────────────────────────────────────────
 
-  mlflow:
-    image: ghcr.io/mlflow/mlflow:v2.11.0
-    container_name: mlflow
-    command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri /mlflow/db --default-artifact-root /mlflow/artifacts
-    volumes:
-      - mlflow_data:/mlflow
-    ports:
-      - "5000:5000"   # → http://localhost:5000
-    networks:
-      - fraud-net
-
-  # ─────────────────────────────────────────────────────────────────────────────
-  # STREAM PROCESSOR
-  # Production: Apache Flink on LKE (4 jobs: enrich, rules, ML, alerts)
-  # Demo:       Python consumer combining all 4 Flink jobs in one process
-  # ─────────────────────────────────────────────────────────────────────────────
-
-  stream-processor:
+  flink-fraud-stream:
     build:
-      context: ./stream_processor
+      context: ../infra/flink-jobs
       dockerfile: Dockerfile
-    container_name: stream-processor
+    container_name: flink-fraud-stream
     depends_on:
       redpanda-init:
         condition: service_completed_successfully
       fraud-scorer:
         condition: service_healthy
-      redis:
-        condition: service_healthy
     environment:
       KAFKA_BROKERS:    redpanda:9092
       FRAUD_SCORER_URL: http://fraud-scorer:8000
-      REDIS_HOST:       redis
-      REDIS_PORT:       "6379"
-      METRICS_PORT:     "8001"
       FRAUD_THRESHOLD:  "0.65"
+    command: python3 /opt/flink/usrlib/fraud_stream_job.py
+    networks:
+      - fraud-net
+    restart: on-failure
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # DATA CATALOG — Project Nessie
+  # Production: Nessie Pod on LKE backed by PostgreSQL (10-nessie.yaml)
+  # Demo:       In-memory (catálogo reseta ao reiniciar o container — ok para demo)
+  #
+  # API → http://localhost:19120/api/v1
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  nessie:
+    image: ghcr.io/projectnessie/nessie:0.80.0
+    container_name: nessie
+    environment:
+      QUARKUS_PROFILE:           prod
+      NESSIE_VERSION_STORE_TYPE: IN_MEMORY
+      QUARKUS_HTTP_PORT:         "19120"
     ports:
-      - "8001:8001"   # Prometheus metrics
+      - "19120:19120"
+    networks:
+      - fraud-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:19120/api/v1/config"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BRONZE CONSUMER — persiste raw claims do Redpanda no Linode Object Storage
+  # Production: bronze-consumer Pod on LKE (11-bronze-consumer.yaml)
+  # Demo:       mesmo consumer, apontando para o mesmo bucket do Terraform
+  #
+  # Lê:    raw.claims.new
+  # Grava: s3://fraud-datalake/bronze/claims/year=YYYY/month=MM/day=DD/*.jsonl
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  bronze-consumer:
+    build:
+      context: ./bronze_consumer
+      dockerfile: Dockerfile
+    container_name: bronze-consumer
+    depends_on:
+      redpanda-init:
+        condition: service_completed_successfully
+    environment:
+      KAFKA_BROKERS:         redpanda:9092
+      BUCKET:                ${BUCKET}
+      AWS_ACCESS_KEY_ID:     ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_ENDPOINT_URL_S3:   ${AWS_ENDPOINT_URL_S3}
+      BATCH_SIZE:            "50"
+      FLUSH_INTERVAL:        "15"
     networks:
       - fraud-net
 
   # ─────────────────────────────────────────────────────────────────────────────
   # DATA GENERATOR
-  # Production: This role is played by the real claims adjudication system
-  # Demo:       Python script that generates synthetic legitimate + fraudulent claims
+  # Production: sistema real de guias da operadora
+  # Demo:       gera claims sintéticas legítimas + fraudulentas
   # ─────────────────────────────────────────────────────────────────────────────
 
   data-generator:
@@ -292,8 +349,79 @@ services:
       POSTGRES_USER:     fraud_user
       POSTGRES_PASSWORD: fraud_pass
       KAFKA_BROKERS:     redpanda:9092
-      CLAIMS_PER_SECOND: "2"      # adjust to speed up/slow down demo
-      FRAUD_RATE:        "0.08"   # 8% fraud rate
+      CLAIMS_PER_SECOND: "2"
+      FRAUD_RATE:        "0.08"
+    networks:
+      - fraud-net
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ML EXPERIMENT TRACKING
+  # Production: MLflow on LKE com artifact store no Linode Object Storage
+  # Demo:       MLflow com filesystem local
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.11.0
+    container_name: mlflow
+    command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri /mlflow/db --default-artifact-root /mlflow/artifacts
+    volumes:
+      - mlflow_data:/mlflow
+    ports:
+      - "5000:5000"   # → http://localhost:5000
+    networks:
+      - fraud-net
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BATCH ETL — Apache Spark (medallion: bronze → silver → gold)
+  # Production: ScheduledSparkApplication CRDs via Spark Operator (13-spark-jobs.yaml)
+  # Demo:       spark-submit local[*] contra o mesmo Linode Object Storage + Nessie
+  #             Perfil "etl" — não sobem com docker-compose up, só sob demanda.
+  #
+  # make etl-silver   →  lê bronze/ do Object Storage, escreve nessie.silver.claims
+  # make etl-gold     →  lê silver Iceberg, escreve gold feature tables
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  spark-silver-etl:
+    profiles: ["etl"]
+    build:
+      context: ../infra/spark-jobs
+      dockerfile: Dockerfile
+    container_name: spark-silver-etl
+    depends_on:
+      nessie:
+        condition: service_healthy
+    command:
+      - /opt/spark/bin/spark-submit
+      - --master
+      - "local[*]"
+      - /app/silver_etl.py
+    environment:
+      NESSIE_URI:             http://nessie:19120/api/v1
+      AWS_ENDPOINT_URL_S3:    ${AWS_ENDPOINT_URL_S3}
+      AWS_ACCESS_KEY_ID:      ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY:  ${AWS_SECRET_ACCESS_KEY}
+    networks:
+      - fraud-net
+
+  spark-gold-features:
+    profiles: ["etl"]
+    build:
+      context: ../infra/spark-jobs
+      dockerfile: Dockerfile
+    container_name: spark-gold-features
+    depends_on:
+      nessie:
+        condition: service_healthy
+    command:
+      - /opt/spark/bin/spark-submit
+      - --master
+      - "local[*]"
+      - /app/gold_features.py
+    environment:
+      NESSIE_URI:             http://nessie:19120/api/v1
+      AWS_ENDPOINT_URL_S3:    ${AWS_ENDPOINT_URL_S3}
+      AWS_ACCESS_KEY_ID:      ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY:  ${AWS_SECRET_ACCESS_KEY}
     networks:
       - fraud-net
 
